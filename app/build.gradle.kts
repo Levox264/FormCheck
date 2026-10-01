@@ -72,4 +72,5 @@ dependencies {
 
     // Image loading for thumbnails (skip if you're just using drawable resources)
     implementation(libs.coil.compose)
+    testImplementation("junit:junit:4.13.2")
 }

@@ -95,8 +95,8 @@ fun AppNavHost(navController: NavHostController = rememberNavController()) {
                 exercise = ExerciseDetail(
                     name = exercise.displayName,
                     description = exercise.description,
-                    trackedCriteria = exercise.formCriteria.values
-                        .flatMap { it.keys }
+                    trackedCriteria = exercise.checks
+                        .map { it.metricId }
                         .distinct()
                         .map { it.replace("_", " ").replaceFirstChar { char -> char.uppercase() } }
                 ),

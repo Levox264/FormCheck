@@ -42,10 +42,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
@@ -55,11 +52,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.LocalLifecycleOwner
-import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -76,13 +70,17 @@ import com.google.mediapipe.tasks.vision.core.RunningMode
 import com.google.mediapipe.tasks.vision.poselandmarker.PoseLandmarker
 import com.google.mediapipe.tasks.vision.poselandmarker.PoseLandmarkerResult
 import java.util.concurrent.Executors
-import kotlin.math.*
 import kotlin.time.Duration.Companion.milliseconds
 import kotlinx.coroutines.delay
-
+import com.example.formcheck.engine.MetricEngine
+import com.example.formcheck.engine.RepCounter
+import com.example.formcheck.engine.RepLogger
 private const val VISIBILITY_THRESHOLD = 0.5f
-private const val TOLERANCE = 5f
 private const val MODEL_ASSET = "pose_landmarker_lite.task"
+// true  = metric 3D world landmarks (preferred)
+// false = image-space pixels (aspect-corrected). For the OLD behaviour use
+//         MediaPipeAdapter.fromImage2D(normalized, 1, 1)
+private const val USE_WORLD_LANDMARKS = true
 
 class CameraActivity : ComponentActivity() {
     private lateinit var exercise: ExerciseDefinition
@@ -145,12 +143,13 @@ fun CameraWorkoutScreen(
     val lifecycleOwner = LocalLifecycleOwner.current
     val cameraExecutor = remember { Executors.newSingleThreadExecutor() }
 
+    val metricEngine = remember { MetricEngine(exercise.requiredMetricIds) }
+
     val repCounter = remember {
         RepCounter(
-            downThreshold = exercise.downThreshold,
-            upThreshold = exercise.upThreshold,
-            formCriteria = exercise.formCriteria,
-            repCountingJoint = exercise.repCountingJoint
+            counting = exercise.counting,
+            checks = exercise.checks,
+            logger = RepLogger { Log.d("RepCounter", it) },
         )
     }
 
@@ -167,13 +166,17 @@ fun CameraWorkoutScreen(
         val options = PoseLandmarker.PoseLandmarkerOptions.builder()
             .setBaseOptions(baseOptions)
             .setRunningMode(RunningMode.LIVE_STREAM)
-            .setResultListener { result, _ ->
+            .setResultListener { result, input ->
                 if (result.landmarks().isNotEmpty()) {
-                    val landmarks = result.landmarks()[0]
-                    val angles = getJointAngles(landmarks, exercise.joints)
-                    repCounter.update(angles, landmarks)
-                    // Structural equality means these only trigger recomposition
-                    // on the frames where a value actually changed.
+                    val normalized = result.landmarks()[0]
+                    @Suppress("SimplifyBooleanWithConstants")
+                    val landmarks =
+                        if (USE_WORLD_LANDMARKS && result.worldLandmarks().isNotEmpty())
+                            MediaPipeAdapter.fromWorld(normalized, result.worldLandmarks()[0])
+                        else
+                            MediaPipeAdapter.fromImage2D(normalized, input.width, input.height)
+
+                    repCounter.update(metricEngine.compute(landmarks))
                     repCount = repCounter.repCount
                     goodRepCount = repCounter.goodRepCount
                     badRepCount = repCounter.badRepCount
@@ -268,7 +271,7 @@ fun CameraWorkoutScreen(
                     exerciseId = exercise.id,
                     goodReps = repCounter.goodRepCount,
                     badReps = repCounter.badRepCount,
-                    judgements = repCounter.judgements.toList()
+                    judgements = repCounter.judgements.map { RepJudgement(it.repNumber, it.isGood, it.issues) },
                 )
             )
         },
@@ -277,7 +280,7 @@ fun CameraWorkoutScreen(
                 exerciseId = exercise.id,
                 goodReps = repCounter.goodRepCount,
                 badReps = repCounter.badRepCount,
-                judgements = repCounter.judgements.toList()
+                judgements = repCounter.judgements.map { RepJudgement(it.repNumber, it.isGood, it.issues) },
             )
             onExitClick(result)
         },
@@ -289,12 +292,14 @@ fun CameraWorkoutScreen(
         }
     )
 }
+
+@Suppress("unused")
 @Composable
 fun PoseOverlay(
     result: PoseLandmarkerResult?
 ) {
     Canvas(modifier = Modifier.fillMaxSize()) {
-        if (result == null || result.landmarks().isEmpty()) return@Canvas
+        if ((result == null) || result.landmarks().isEmpty()) return@Canvas
         
         val landmarks = result.landmarks()[0]
         
@@ -397,10 +402,11 @@ fun CameraScreen(
     }
 }
 
+@Suppress("SameParameterValue")
 @Composable
 private fun GlassIconButton(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
-    contentDescription: String,
+    contentDescription: String? = null,
     onClick: () -> Unit,
 ) {
     Box(
@@ -525,238 +531,5 @@ private fun EndSetButton(onClick: () -> Unit) {
         Icon(imageVector = Icons.Filled.Close, contentDescription = null, tint = Color.White)
         Spacer(Modifier.width(8.dp))
         Text(text = "End set", style = MaterialTheme.typography.titleMedium, color = Color.White)
-    }
-}
-
-private fun NormalizedLandmark.vis(): Float = visibility().orElse(0f)
-
-private fun calculateAngle(a: NormalizedLandmark, b: NormalizedLandmark, c: NormalizedLandmark): Float {
-    val baX = a.x() - b.x()
-    val baY = a.y() - b.y()
-    val bcX = c.x() - b.x()
-    val bcY = c.y() - b.y()
-
-    val dot = (baX * bcX) + (baY * bcY)
-    val normBa = sqrt(baX * baX + baY * baY)
-    val normBc = sqrt(bcX * bcX + bcY * bcY)
-
-    var cosine = dot / (normBa * normBc + 1e-6f)
-    cosine = cosine.coerceIn(-1f, 1f)
-    return Math.toDegrees(acos(cosine).toDouble()).toFloat()
-}
-
-private fun getJointAngles(landmarks: List<NormalizedLandmark>, joints: Map<String, Triple<Int, Int, Int>>): Map<String, Float> {
-    val angles = mutableMapOf<String, Float>()
-    for ((name, triple) in joints) {
-        val (i, j, k) = triple
-        val a = landmarks[i]; val b = landmarks[j]; val c = landmarks[k]
-        if (a.vis() < VISIBILITY_THRESHOLD || b.vis() < VISIBILITY_THRESHOLD || c.vis() < VISIBILITY_THRESHOLD) {
-            continue
-        }
-        angles[name] = calculateAngle(a, b, c)
-    }
-    return angles
-}
-
-/** Average left/right angle, falling back to whichever side is visible. */
-private fun sideAngle(angles: Map<String, Float>, baseName: String): Float? {
-    val left = angles["left_$baseName"]
-    val right = angles["right_$baseName"]
-    return when {
-        left != null && right != null -> (left + right) / 2f
-        left != null -> left
-        right != null -> right
-        else -> null
-    }
-}
-
-data class FormResult(
-    val isGood: Boolean,
-    val checked: Map<String, Boolean>,
-    val measured: Map<String, Float>,
-    val issues: List<String>,
-)
-
-private fun evaluateForm(
-    angles: Map<String, Float>,
-    phase: String,
-    formCriteria: Map<String, Map<String, Pair<Float, Float>>>,
-    tolerance: Float = TOLERANCE
-): FormResult {
-    val criteria = formCriteria[phase] ?: error("phase must be 'top' or 'bottom', got $phase")
-
-    val checked = mutableMapOf<String, Boolean>()
-    val measured = mutableMapOf<String, Float>()
-    val issues = mutableListOf<String>()
-
-    for ((jointName, bounds) in criteria) {
-        val (low, high) = bounds
-        val value = sideAngle(angles, jointName)
-        if (value == null) {
-            issues.add("$jointName: not visible, skipped")
-            continue
-        }
-        measured[jointName] = value
-        val passed = value in (low - tolerance)..(high + tolerance)
-        checked[jointName] = passed
-        if (!passed) {
-            issues.add("$jointName: ${value.toInt()}\u00b0 (optimal: ${low.toInt()}-${high.toInt()}\u00b0)")
-        }
-    }
-
-    val isGood = checked.isNotEmpty() && checked.values.all { it }
-    return FormResult(isGood, checked, measured, issues)
-}
-
-/** Confirms the torso is roughly horizontal (floor push-up), same logic as the Python version. */
-private fun isBodyHorizontal(landmarks: List<NormalizedLandmark>, maxDeviationDeg: Float = 45f): Pair<Boolean, Float> {
-    val leftShoulder = landmarks[11]; val rightShoulder = landmarks[12]
-    val leftHip = landmarks[23]; val rightHip = landmarks[24]
-
-    val shoulderMidX = (leftShoulder.x() + rightShoulder.x()) / 2f
-    val shoulderMidY = (leftShoulder.y() + rightShoulder.y()) / 2f
-    val hipMidX = (leftHip.x() + rightHip.x()) / 2f
-    val hipMidY = (leftHip.y() + rightHip.y()) / 2f
-
-    val dx = hipMidX - shoulderMidX
-    val dy = hipMidY - shoulderMidY
-    var lineAngle = abs(Math.toDegrees(atan2(dy, dx).toDouble())).toFloat()
-    if (lineAngle > 90f) lineAngle = 180f - lineAngle
-
-    return (lineAngle <= maxDeviationDeg) to lineAngle
-}
-
-// =====================================================================================
-// REP COUNTER  (direct translation of your RepCounter class)
-// =====================================================================================
-
-class RepCounter(
-    private val downThreshold: Float,
-    private val upThreshold: Float,
-    private val formCriteria: Map<String, Map<String, Pair<Float, Float>>>,
-    private val repCountingJoint: String,
-) {
-    var state: String = "up"
-        private set
-    var repCount = 0
-        private set
-    var goodRepCount = 0
-        private set
-    var badRepCount = 0
-        private set
-    var skippedRepCount = 0
-        private set
-
-    private var currentRepMinAngle: Float? = null
-    private var currentRepMinAngles: Map<String, Float>? = null
-
-    // True if the counting joint dropped out of view at any point during the current "down" phase.
-    private var countingJointLostMidRep = false
-
-    var lastRepGood: Boolean? = null
-        private set
-    var lastRepIssues: List<String> = emptyList()
-        private set
-
-    /** Callback fired whenever a rep finishes being judged, for UI updates. */
-    var onRepJudged: ((repNumber: Int, good: Boolean, issues: List<String>) -> Unit)? = null
-
-    /** Callback fired when a rep-in-progress is discarded because a required joint wasn't visible. */
-    var onRepSkipped: ((reason: String) -> Unit)? = null
-
-    /** True only if every joint required by this phase's form criteria was visible. */
-    private fun allCriteriaJointsVisible(angles: Map<String, Float>, phase: String): Boolean {
-        val criteria = formCriteria[phase] ?: return true
-        return criteria.keys.all { jointName -> sideAngle(angles, jointName) != null }
-    }
-
-    fun update(angles: Map<String, Float>, landmarks: List<NormalizedLandmark>?) {
-        val countingAngle = sideAngle(angles, repCountingJoint)
-
-        if (countingAngle == null) {
-            // Counting joint isn't visible this frame. If we're mid-rep, remember that this
-            // rep can no longer be trusted, but keep waiting rather than resetting state -
-            // the joint may come back before the rep completes.
-            if (state == "down") {
-                countingJointLostMidRep = true
-            }
-            return
-        }
-
-        when (state) {
-            "up" -> {
-                if (countingAngle < downThreshold) {
-                    state = "down"
-                    currentRepMinAngle = countingAngle
-                    currentRepMinAngles = angles
-                    countingJointLostMidRep = false
-                }
-            }
-            "down" -> {
-                if (currentRepMinAngle == null || countingAngle < currentRepMinAngle!!) {
-                    currentRepMinAngle = countingAngle
-                    currentRepMinAngles = angles
-                }
-
-                if (countingAngle > upThreshold) {
-                    state = "up"
-                    finishRep(topAngles = angles)
-                    currentRepMinAngle = null
-                    currentRepMinAngles = null
-                    countingJointLostMidRep = false
-                }
-            }
-        }
-    }
-
-    val judgements = mutableListOf<RepJudgement>()
-
-    /** Decides whether the just-completed rep can be judged, or must be discarded as unverifiable. */
-    private fun finishRep(topAngles: Map<String, Float>) {
-        val bottomAngles = currentRepMinAngles
-
-        val reason = when {
-            countingJointLostMidRep ->
-                "$repCountingJoint not visible during rep"
-            bottomAngles == null ->
-                "no bottom-of-rep data captured"
-            !allCriteriaJointsVisible(bottomAngles, "bottom") ->
-                "form joint not visible at bottom of rep"
-            !allCriteriaJointsVisible(topAngles, "top") ->
-                "form joint not visible at top of rep"
-            else -> null
-        }
-
-        if (reason != null) {
-            skippedRepCount += 1
-            Log.d("RepCounter", "Rep discarded: $reason")
-            onRepSkipped?.invoke(reason)
-            return
-        }
-
-        repCount += 1
-        judgeRep(bottomAngles!!, topAngles)
-    }
-
-    private fun judgeRep(bottomAngles: Map<String, Float>, topAngles: Map<String, Float>) {
-        val issues = mutableListOf<String>()
-
-        val bottomResult = evaluateForm(bottomAngles, "bottom", formCriteria)
-        issues += bottomResult.issues.map { "bottom - $it" }
-
-        val topResult = evaluateForm(topAngles, "top", formCriteria)
-        issues += topResult.issues.map { "top - $it" }
-
-        val repIsGood = bottomResult.isGood && topResult.isGood
-        if (repIsGood) goodRepCount += 1 else badRepCount += 1
-
-        lastRepGood = repIsGood
-        lastRepIssues = issues
-
-        Log.d("RepCounter", "Rep $repCount: ${if (repIsGood) "GOOD" else "BAD"}")
-        issues.forEach { Log.d("RepCounter", "  - $it") }
-
-        judgements.add(RepJudgement(repCount, repIsGood, issues))
-        onRepJudged?.invoke(repCount, repIsGood, issues)
     }
 }
