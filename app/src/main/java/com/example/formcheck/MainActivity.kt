@@ -15,6 +15,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import com.example.formcheck.stats.StatsRoute
 import com.example.formcheck.ui.ExerciseListScreen
 import com.example.formcheck.ui.screens.SummaryScreen
 import com.example.formcheck.ui.screens.WorkoutSummary
@@ -56,6 +57,7 @@ fun AppNavHost(navController: NavHostController = rememberNavController()) {
             ExerciseListScreen(
                 exercises = ExerciseRepository.all,
                 onExerciseClick = { id -> navController.navigate("detail/$id") },
+                onStatsClick = { navController.navigate("stats") },
                 onQuickStart = {
                     // Fall back to the first exercise if none has been done yet.
                     val exerciseId = LastExerciseStore.get(context)
@@ -130,6 +132,9 @@ fun AppNavHost(navController: NavHostController = rememberNavController()) {
                 summary = summary,
                 onDone = { navController.popBackStack("list", inclusive = false) }
             )
+        }
+        composable("stats") {
+            StatsRoute(onBack = { navController.popBackStack() })
         }
     }
 }

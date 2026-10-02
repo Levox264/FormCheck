@@ -4,6 +4,7 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
@@ -55,7 +56,8 @@ fun ExerciseListScreen(
     exercises: List<ExerciseDefinition>,
     onExerciseClick: (String) -> Unit,
     onQuickStart: () -> Unit = {},
-) {
+    onStatsClick: () -> Unit = {},
+    ) {
     // Group by category, preserving declaration order, dropping empty categories.
     val grouped: List<Pair<ExerciseCategory, List<ExerciseDefinition>>> = remember(exercises) {
         ExerciseCategory.entries
@@ -72,10 +74,17 @@ fun ExerciseListScreen(
         ) {
             item {
                 Column {
-                    Text(
-                        text = "Exercises",
-                        style = MaterialTheme.typography.headlineLarge,
-                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = "Exercises",
+                            style = MaterialTheme.typography.headlineLarge,
+                        )
+                        StatsPill(onClick = onStatsClick)
+                    }
                     Spacer(Modifier.height(8.dp))
                     Text(
                         text = "Pick a movement and FormCheck will count your reps and watch your form.",
@@ -183,7 +192,25 @@ private fun QuickStartButton(onClick: () -> Unit) {
         }
     }
 }
-
+@Composable
+private fun StatsPill(onClick: () -> Unit) {
+    val shape = RoundedCornerShape(14.dp)
+    Box(
+        modifier = Modifier
+            .height(44.dp)
+            .clip(shape)
+            .border(1.dp, Divider, shape)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 18.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = "Stats",
+            style = MaterialTheme.typography.labelLarge,
+            color = Accent,
+        )
+    }
+}
 @Composable
 private fun ExerciseCard(
     exercise: ExerciseDefinition,

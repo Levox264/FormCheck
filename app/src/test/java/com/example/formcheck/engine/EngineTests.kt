@@ -174,4 +174,13 @@ class RepCounterTest {
             assertEquals("${ex.id} dropout actually exercised", 1, legacy.skipped)
         }
     }
+
+    @Test fun shortDropoutIsTolerated() {
+        val counter = RepCounter(CountingSpec("knee", 80f, 170f), emptyList())
+        waveform(80f, 170f, 1).forEachIndexed { i, v ->
+            if (i in 11..13) counter.update(emptyMap()) else counter.update(mapOf("knee" to v))
+        }
+        assertEquals(1, counter.repCount)
+        assertEquals(0, counter.skippedRepCount)
+    }
 }

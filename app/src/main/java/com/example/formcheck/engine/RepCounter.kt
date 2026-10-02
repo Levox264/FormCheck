@@ -19,11 +19,13 @@ class RepCounter(
     private val counting: CountingSpec,
     private val checks: List<FormCheck>,
     private val tolerance: Float = FORM_TOLERANCE_DEG,
+    private val maxMissingFrames: Int = 8,   // ~0.65 s at 12 fps
     private val logger: RepLogger = RepLogger.None,
 ) {
     private enum class State { UP, DOWN }
 
     private var state = State.UP
+    private var missingFrames = 0
     // inside class RepCounter
     @Volatile
     var repCount = 0
@@ -66,11 +68,13 @@ class RepCounter(
         val value = metrics[counting.metricId]
 
         if (value == null) {
-            // Counting metric not visible. Mid-rep, the rep can no longer be trusted,
-            // but keep waiting - it may come back before the rep completes.
-            if (state == State.DOWN) countingMetricLostMidRep = true
+            // Brief dropouts are ignored; only a long gap makes the rep untrustworthy.
+            if (state == State.DOWN && ++missingFrames > maxMissingFrames) {
+                countingMetricLostMidRep = true
+            }
             return
         }
+        missingFrames = 0
 
         when (state) {
             State.UP -> if (value < counting.downThreshold) {

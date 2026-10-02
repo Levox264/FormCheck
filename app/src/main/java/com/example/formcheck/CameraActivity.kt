@@ -75,12 +75,14 @@ import kotlinx.coroutines.delay
 import com.example.formcheck.engine.MetricEngine
 import com.example.formcheck.engine.RepCounter
 import com.example.formcheck.engine.RepLogger
+import com.google.mediapipe.tasks.core.Delegate
+import com.example.formcheck.stats.WorkoutHistory
 private const val VISIBILITY_THRESHOLD = 0.5f
-private const val MODEL_ASSET = "pose_landmarker_lite.task"
+private const val MODEL_ASSET = "pose_landmarker_full.task"
 // true  = metric 3D world landmarks (preferred)
 // false = image-space pixels (aspect-corrected). For the OLD behaviour use
 //         MediaPipeAdapter.fromImage2D(normalized, 1, 1)
-private const val USE_WORLD_LANDMARKS = true
+private const val USE_WORLD_LANDMARKS = false
 
 class CameraActivity : ComponentActivity() {
     private lateinit var exercise: ExerciseDefinition
@@ -117,6 +119,7 @@ class CameraActivity : ComponentActivity() {
                     CameraWorkoutScreen(
                         exercise = exercise,
                         onExitClick = { result ->
+                            WorkoutHistory.append(applicationContext, result)
                             val data = Intent().apply {
                                 putExtra("workoutResult", result)
                             }
@@ -159,33 +162,38 @@ fun CameraWorkoutScreen(
     var skipReason by remember { mutableStateOf<String?>(null) }
 
     val poseLandmarker = remember {
-        val baseOptions = BaseOptions.builder()
-            .setModelAssetPath(MODEL_ASSET)
-            .build()
+        fun build(delegate: Delegate): PoseLandmarker {
+            val baseOptions = BaseOptions.builder()
+                .setModelAssetPath(MODEL_ASSET)
+                .setDelegate(delegate)
+                .build()
+            val options = PoseLandmarker.PoseLandmarkerOptions.builder()
+                .setBaseOptions(baseOptions)
+                .setRunningMode(RunningMode.LIVE_STREAM)
+                .setResultListener { result, input ->
+                    if (result.landmarks().isNotEmpty()) {
+                        val normalized = result.landmarks()[0]
+                        @Suppress("SimplifyBooleanWithConstants")
+                        val landmarks =
+                            if (USE_WORLD_LANDMARKS && result.worldLandmarks().isNotEmpty())
+                                MediaPipeAdapter.fromWorld(normalized, result.worldLandmarks()[0])
+                            else
+                                MediaPipeAdapter.fromImage2D(normalized, input.width, input.height)
 
-        val options = PoseLandmarker.PoseLandmarkerOptions.builder()
-            .setBaseOptions(baseOptions)
-            .setRunningMode(RunningMode.LIVE_STREAM)
-            .setResultListener { result, input ->
-                if (result.landmarks().isNotEmpty()) {
-                    val normalized = result.landmarks()[0]
-                    @Suppress("SimplifyBooleanWithConstants")
-                    val landmarks =
-                        if (USE_WORLD_LANDMARKS && result.worldLandmarks().isNotEmpty())
-                            MediaPipeAdapter.fromWorld(normalized, result.worldLandmarks()[0])
-                        else
-                            MediaPipeAdapter.fromImage2D(normalized, input.width, input.height)
-
-                    repCounter.update(metricEngine.compute(landmarks))
-                    repCount = repCounter.repCount
-                    goodRepCount = repCounter.goodRepCount
-                    badRepCount = repCounter.badRepCount
+                        repCounter.update(metricEngine.compute(landmarks))
+                        repCount = repCounter.repCount
+                        goodRepCount = repCounter.goodRepCount
+                        badRepCount = repCounter.badRepCount
+                    }
                 }
-            }
-            .setErrorListener { e -> Log.e("PoseLandmarker", "Detection error", e) }
-            .build()
-
-        PoseLandmarker.createFromOptions(context, options)
+                .setErrorListener { e -> Log.e("PoseLandmarker", "Detection error", e) }
+                .build()
+            return PoseLandmarker.createFromOptions(context, options)
+        }
+        try { build(Delegate.GPU) } catch (e: Exception) {
+            Log.w("PoseLandmarker", "GPU delegate failed, using CPU", e)
+            build(Delegate.CPU)
+        }
     }
 
     repCounter.onRepSkipped = { reason ->
