@@ -19,7 +19,7 @@ object WorkoutHistory {
 
     /** Saves a finished set. Empty sets (0 counted reps) are ignored. */
     fun append(context: Context, result: WorkoutResult, nowMs: Long = System.currentTimeMillis()) {
-        if (result.goodReps + result.badReps == 0) return
+        if ((result.goodReps + result.badReps) == 0) return
 
         // ASSUMPTION: RepJudgement exposes its coaching messages as `issues`.
         // If your property is named differently, this is the only line to change.
@@ -36,6 +36,7 @@ object WorkoutHistory {
 
     fun load(context: Context): List<SessionRecord> = synchronized(lock) { readAll(context) }
 
+    @Suppress("unused")
     fun clear(context: Context) = synchronized(lock) { file(context).delete(); Unit }
 
     private fun file(context: Context) = File(context.filesDir, FILE_NAME)
@@ -56,7 +57,7 @@ object WorkoutHistory {
                     issueCounts = issues?.keys()?.asSequence()?.associateWith { issues.getInt(it) } ?: emptyMap(),
                 )
             }
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             emptyList() // corrupt file: start fresh rather than crash
         }
     }

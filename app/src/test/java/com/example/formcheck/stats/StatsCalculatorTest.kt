@@ -13,7 +13,7 @@ class StatsCalculatorTest {
     private val now = 1_790_856_000_000L
 
     private fun rec(daysAgo: Int, ex: String, good: Int, bad: Int, issues: Map<String, Int> = emptyMap()) =
-        SessionRecord(now - daysAgo * day, ex, good, bad, issues)
+        SessionRecord(now - (daysAgo * day), ex, good, bad, issues)
 
     private fun summarize(sessions: List<SessionRecord>, range: StatsRange) =
         StatsCalculator.summarize(sessions, range, now, utc, nameOf = { it })

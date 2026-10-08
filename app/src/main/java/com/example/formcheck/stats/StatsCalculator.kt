@@ -3,9 +3,9 @@ package com.example.formcheck.stats
 import java.util.TimeZone
 
 enum class StatsRange(val label: String, val days: Int?) {
+    DAY("1D", 1),
     WEEK("7D", 7),
     MONTH("30D", 30),
-    ALL("All", null),
 }
 
 data class ExerciseStat(
@@ -20,7 +20,7 @@ data class ExerciseStat(
 
 data class IssueStat(val message: String, val repCount: Int)
 
-data class DayBar(val label: String, val reps: Int, val isToday: Boolean)
+data class DayBar(val label: String, val reps: Int, val isToday: Boolean, val dayStart: Long = 0L)
 
 data class StatsSummary(
     val sessions: Int,
@@ -52,7 +52,7 @@ object StatsCalculator {
         val today = dayIndex(nowMs, zone)
         val days = range.days
         val inRange = if (days == null) sessions
-        else sessions.filter { dayIndex(it.timestampMs, zone) > today - days }
+        else sessions.filter { dayIndex(it.timestampMs, zone) > (today - days) }
 
         val good = inRange.sumOf { it.goodReps }
         val bad = inRange.sumOf { it.badReps }
@@ -75,22 +75,54 @@ object StatsCalculator {
             totalReps = good + bad,
             goodReps = good,
             badReps = bad,
-            formScore = if (good + bad == 0) null else good.toFloat() / (good + bad),
+            formScore = if ((good + bad) == 0) null else good.toFloat() / (good + bad),
             exercises = exercises,
             topIssues = topIssues,
         )
     }
 
-    /** Reps per day for the last 7 days, oldest first, today last. */
-    fun lastSevenDays(sessions: List<SessionRecord>, nowMs: Long, zone: TimeZone): List<DayBar> {
+    fun summarizeDay(
+        sessions: List<SessionRecord>,
+        dayStartMs: Long,
+        zone: TimeZone,
+        nameOf: (String) -> String,
+    ): StatsSummary {
+        val targetDay = dayIndex(dayStartMs, zone)
+        val daySessions = sessions.filter { dayIndex(it.timestampMs, zone) == targetDay }
+        return summarize(daySessions, StatsRange.DAY, dayStartMs + (DAY_MS / 2), zone, nameOf)
+    }
+
+    /** Reps per day for the requested range, oldest first, today last. */
+    fun dailyBars(
+        sessions: List<SessionRecord>,
+        range: StatsRange,
+        nowMs: Long,
+        zone: TimeZone,
+    ): List<DayBar> {
         val today = dayIndex(nowMs, zone)
+        val numDays = range.days ?: 30
         val repsByDay = sessions.groupBy { dayIndex(it.timestampMs, zone) }
             .mapValues { (_, list) -> list.sumOf { it.totalReps } }
-        return (6 downTo 0).map { offset ->
+        return ((numDays - 1) downTo 0).map { offset ->
             val day = today - offset
             // 1970-01-01 was a Thursday, i.e. index 4 with Sunday = 0
             val dow = Math.floorMod(day + 4, 7L).toInt()
-            DayBar(DAY_LETTERS[dow].toString(), repsByDay[day] ?: 0, isToday = offset == 0)
+            val label = if ((numDays > 7) && (offset == (numDays - 1))) {
+                "${numDays}d ago"
+            } else {
+                DAY_LETTERS[dow].toString()
+            }
+            val approxUtc = day * DAY_MS
+            val offsetMs = zone.getOffset(approxUtc)
+            var start = approxUtc - offsetMs
+            val actualOffset = zone.getOffset(start)
+            if (actualOffset != offsetMs) start = approxUtc - actualOffset
+
+            DayBar(label, repsByDay[day] ?: 0, isToday = offset == 0, dayStart = start)
         }
     }
+
+    /** Reps per day for the last 7 days, oldest first, today last. */
+    fun lastSevenDays(sessions: List<SessionRecord>, nowMs: Long, zone: TimeZone): List<DayBar> =
+        dailyBars(sessions, StatsRange.WEEK, nowMs, zone)
 }

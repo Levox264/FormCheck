@@ -1,11 +1,14 @@
 package com.example.formcheck.stats
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -33,11 +36,13 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
@@ -45,13 +50,16 @@ import androidx.compose.ui.unit.dp
 import com.example.formcheck.ExerciseRepository
 import com.example.formcheck.ui.theme.Accent
 import com.example.formcheck.ui.theme.Background
+import com.example.formcheck.ui.theme.Bad
 import com.example.formcheck.ui.theme.Divider
+import com.example.formcheck.ui.theme.Good
 import com.example.formcheck.ui.theme.OnSurfaceMuted
 import com.example.formcheck.ui.theme.Surface as SurfaceColor
-import com.example.formcheck.ui.theme.Bad
-import com.example.formcheck.ui.theme.Good
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.TimeZone
 import kotlin.math.roundToInt
 
@@ -76,8 +84,12 @@ fun StatsScreen(sessions: List<SessionRecord>, onBack: () -> Unit) {
     val summary = remember(sessions, range) {
         StatsCalculator.summarize(sessions, range, now, zone, ::exerciseName)
     }
-    val week = remember(sessions) { StatsCalculator.lastSevenDays(sessions, now, zone) }
+    var selectedIndex by remember(range) { mutableStateOf<Int?>(null) }   // resets when the range changes
 
+    val bars = remember(sessions, range) { StatsCalculator.dailyBars(sessions, range, now, zone) }
+    val daySummary = remember(sessions, bars, selectedIndex) {
+        selectedIndex?.let { StatsCalculator.summarizeDay(sessions, bars[it].dayStart, zone, ::exerciseName) }
+    }
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -104,7 +116,7 @@ fun StatsScreen(sessions: List<SessionRecord>, onBack: () -> Unit) {
             return@Column
         }
 
-        RangeChips(selected = range, onSelect = { range = it })
+        RangeChips(selected = range) { range = it }
 
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             StatCard("Sets", summary.sessions.toString(), Modifier.weight(1f))
@@ -122,8 +134,15 @@ fun StatsScreen(sessions: List<SessionRecord>, onBack: () -> Unit) {
             )
         }
 
-        SectionCard(title = "Last 7 days") { WeekChart(week) }
-
+        if (range != StatsRange.DAY) {
+            SectionCard(title = if (range == StatsRange.WEEK) "Last 7 days" else "Last 30 days") {
+                ActivityChart(bars, selectedIndex) { selectedIndex = it }
+            }
+            AnimatedVisibility(visible = selectedIndex != null) {
+                val i = selectedIndex
+                if ((i != null) && (daySummary != null)) DayDetailCard(bars[i], daySummary, zone)
+            }
+        }
         SectionCard(title = "By exercise") {
             if (summary.exercises.isEmpty()) {
                 Muted("No sets in this range.")
@@ -225,51 +244,125 @@ private fun RangeChips(selected: StatsRange, onSelect: (StatsRange) -> Unit) {
 }
 
 @Composable
-private fun WeekChart(bars: List<DayBar>) {
+private fun ActivityChart(
+    bars: List<DayBar>,
+    selectedIndex: Int?,
+    onSelect: (Int?) -> Unit,
+) {
+    val compact = bars.size > 7                       // 30D layout
     val maxReps = (bars.maxOfOrNull { it.reps } ?: 0).coerceAtLeast(1)
     val maxBar = 80.dp
-    Row(
-        modifier = Modifier.fillMaxWidth().height(maxBar + 44.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalAlignment = Alignment.Bottom,
-    ) {
-        bars.forEach { bar ->
-            val target: Dp = if (bar.reps == 0) 4.dp else maxBar * (bar.reps.toFloat() / maxReps)
-            val height by animateDpAsState(target, tween(400), label = "bar")
-            Column(
-                modifier = Modifier.weight(1f),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Bottom,
-            ) {
-                if (bar.reps > 0) {
-                    Text(
-                        bar.reps.toString(),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = OnSurfaceMuted,
-                    )
-                    Spacer(Modifier.height(4.dp))
+    val gap = if (compact) 2.dp else 8.dp
+    val radius = if (compact) 2.dp else 8.dp
+    val stub = if (compact) 3.dp else 4.dp
+    val currentSelected by rememberUpdatedState(selectedIndex)
+
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(if (compact) maxBar else maxBar + 44.dp)
+                .pointerInput(bars.size) {
+                    fun indexFor(x: Float) =
+                        ((x / size.width) * bars.size).toInt().coerceIn(0, bars.size - 1)
+                    detectTapGestures { offset ->
+                        val i = indexFor(offset.x)
+                        onSelect(if (i == currentSelected) null else i)   // tap again to deselect
+                    }
                 }
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(height)
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(
-                            when {
-                                bar.reps == 0 -> Divider
-                                bar.isToday -> Accent
-                                else -> Accent.copy(alpha = 0.35f)
-                            },
-                        ),
+                .pointerInput(bars.size) {
+                    fun indexFor(x: Float) =
+                        ((x / size.width) * bars.size).toInt().coerceIn(0, bars.size - 1)
+                    detectHorizontalDragGestures(
+                        onDragStart = { onSelect(indexFor(it.x)) },
+                    ) { change, _ ->
+                        change.consume()
+                        onSelect(indexFor(change.position.x))
+                    }
+                },
+            horizontalArrangement = Arrangement.spacedBy(gap),
+            verticalAlignment = Alignment.Bottom,
+        ) {
+            bars.forEachIndexed { index, bar ->
+                val target: Dp = if (bar.reps == 0) stub else maxBar * (bar.reps.toFloat() / maxReps)
+                val height by animateDpAsState(target, tween(400), label = "bar")
+                val color = when {
+                    bar.reps == 0 -> Divider
+                    selectedIndex == index -> Accent
+                    selectedIndex != null -> Accent.copy(alpha = 0.25f)
+                    bar.isToday -> Accent
+                    else -> Accent.copy(alpha = 0.35f)
+                }
+                Column(
+                    modifier = Modifier.weight(1f),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Bottom,
+                ) {
+                    if (!compact && (bar.reps > 0)) {
+                        Text(bar.reps.toString(), style = MaterialTheme.typography.labelSmall, color = OnSurfaceMuted)
+                        Spacer(Modifier.height(4.dp))
+                    }
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(height)
+                            .clip(RoundedCornerShape(radius))
+                            .background(color),
+                    )
+                    if (!compact) {
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            bar.label,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = if (bar.isToday) MaterialTheme.colorScheme.onSurface else OnSurfaceMuted,
+                            fontWeight = if (bar.isToday) FontWeight.SemiBold else FontWeight.Normal,
+                        )
+                    }
+                }
+            }
+        }
+        if (compact) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text(bars.first().label, style = MaterialTheme.typography.labelMedium, color = OnSurfaceMuted)
+                Text("Today", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+            }
+        }
+    }
+}
+
+@Composable
+private fun DayDetailCard(bar: DayBar, summary: StatsSummary, zone: TimeZone) {
+    val title = remember(bar.dayStart, zone) {
+        val sdf = SimpleDateFormat("EEE, MMM d", Locale.getDefault())
+        sdf.timeZone = zone
+        sdf.format(Date(bar.dayStart))
+    }
+    SectionCard(title = title) {
+        if (summary.sessions == 0) {
+            Muted("No sets on this day.")
+        } else {
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                StatCard("Sets", summary.sessions.toString(), Modifier.weight(1f))
+                StatCard("Reps", summary.totalReps.toString(), Modifier.weight(1f))
+                val score = summary.formScore
+                StatCard(
+                    "Form",
+                    score?.let { "${(it * 100).roundToInt()}%" } ?: "-",
+                    Modifier.weight(1f),
+                    valueColor = when {
+                        score == null -> MaterialTheme.colorScheme.onSurface
+                        score >= 0.75f -> Good
+                        else -> Bad
+                    },
                 )
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    bar.label,
-                    style = MaterialTheme.typography.labelMedium,
-                    color = if (bar.isToday) MaterialTheme.colorScheme.onSurface
-                    else OnSurfaceMuted,
-                    fontWeight = if (bar.isToday) FontWeight.SemiBold else FontWeight.Normal,
-                )
+            }
+            Column(verticalArrangement = Arrangement.spacedBy(18.dp)) {
+                summary.exercises.forEach { ExerciseRow(it) }
+            }
+            if (summary.topIssues.isNotEmpty()) {
+                Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                    summary.topIssues.forEach { IssueRow(it) }
+                }
             }
         }
     }
